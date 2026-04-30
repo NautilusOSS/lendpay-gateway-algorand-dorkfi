@@ -125,4 +125,4 @@ The server listens on `PORT` (default `3000`) on all interfaces. For HTTPS and r
 | Service exits immediately | `journalctl -u dorkfi-gateway -n 50` for stack traces; verify `.env` and RPC URLs. |
 | Permission errors on `.env` | `chown dorkfi-gateway:dorkfi-gateway /opt/dorkfi-gateway/.env` and `chmod 600`. |
 
-For webhook API keys and headers, see [docs/index.md](index.md).
+For webhook API keys and headers, see [webhook-api-keys.md](webhook-api-keys.md).
