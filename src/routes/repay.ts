@@ -8,8 +8,10 @@ import { validateBasePaymentReceipt, PaymentValidationError } from "../services/
 import { buildDorkFiRepayGroup } from "../services/dorkfi.js";
 import { resolvePaymentIdempotency, recordSuccessfulRepay } from "../lib/idempotency.js";
 import { log } from "../lib/logger.js";
+import { requireWebhookApiKey } from "../lib/webhookApiKey.js";
 
 const router = express.Router();
+router.use(requireWebhookApiKey);
 
 function repayMaxBuffer(): bigint {
   const raw = process.env.REPAY_MAX_BUFFER_BASE_UNITS?.trim();
