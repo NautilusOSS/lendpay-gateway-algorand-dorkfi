@@ -97,7 +97,7 @@ export async function validateBasePaymentReceipt(basePaymentTxId: string): Promi
   const block = await client.getBlock({ blockNumber: receipt.blockNumber });
   const blockTs = Number(block.timestamp);
   const now = Math.floor(Date.now() / 1000);
-  if (Number.isFinite(maxAgeSeconds) && maxAgeSeconds >= 0) {
+  if (Number.isFinite(maxAgeSeconds) && maxAgeSeconds > 0) {
     if (now - blockTs > maxAgeSeconds) {
       throw new PaymentValidationError(
         "PAYMENT_TOO_OLD",

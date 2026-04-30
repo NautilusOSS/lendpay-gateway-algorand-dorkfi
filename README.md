@@ -30,7 +30,7 @@ See [.env.example](.env.example) for all variables. Highlights:
 | `PAYMENT_RECEIVER_ADDRESS` | Expected payee (checksummed EVM address) |
 | `PAYMENT_TOKEN_ADDRESS` | ERC-20 address, or `NATIVE` / empty / zero address for ETH |
 | `REQUIRED_PAYMENT_AMOUNT` | Minimum amount (wei or token smallest units, integer string) |
-| `PAYMENT_MAX_AGE_SECONDS` | Max age of payment block timestamp (default `60`) |
+| `PAYMENT_MAX_AGE_SECONDS` | Max age of payment block vs server time (default `60`); `0` disables the check |
 | `DORKFI_*_KEY` | TEAL state keys for borrow index (global) and scaled borrows (user local) |
 | `SERVER_SIGNER_MNEMONIC` | Required only for **execute** mode; must derive **`userAddress`** |
 
@@ -84,7 +84,7 @@ Same validation + **signs** with `SERVER_SIGNER_MNEMONIC` and submits to Algoran
 |------|------|
 | `PAYMENT_TX_NOT_FOUND` | Invalid hash or RPC has no receipt |
 | `PAYMENT_TX_FAILED` | Receipt status not success |
-| `PAYMENT_TOO_OLD` | Block timestamp older than `PAYMENT_MAX_AGE_SECONDS` |
+| `PAYMENT_TOO_OLD` | Block timestamp older than `PAYMENT_MAX_AGE_SECONDS` (never when that env is `0`) |
 | `PAYMENT_RECEIVER_MISMATCH` | Wrong recipient |
 | `PAYMENT_AMOUNT_TOO_LOW` | Below `REQUIRED_PAYMENT_AMOUNT` |
 | `PAYMENT_TOKEN_MISMATCH` | e.g. native expected but only ERC-20 satisfies amount |

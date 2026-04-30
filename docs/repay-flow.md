@@ -19,7 +19,7 @@ The handler runs steps in this order (see `src/routes/repay.ts`):
 2. **Idempotency** using `basePaymentTxId` (case-insensitive) and optional `requestId`:
    - Same tx + same `requestId` as a prior success → return the **cached** success JSON (no re-validation of Base or rebuild side effects beyond returning cache).
    - Same tx + **different** `requestId` than the stored success → 400 `PAYMENT_TX_ALREADY_USED`.
-3. **Base payment validation** (`validateBasePaymentReceipt`): RPC on Base mainnet, receipt success, block age, receiver, token type, and minimum amount per `.env` (400 with payment error codes, or 500 if env is misconfigured).
+3. **Base payment validation** (`validateBasePaymentReceipt`): RPC on Base mainnet, receipt success, optional block-age limit (`PAYMENT_MAX_AGE_SECONDS`; skipped when `0`), receiver, token type, and minimum amount per `.env` (400 with payment error codes, or 500 if env is misconfigured).
 4. **Algorand address** check on `userAddress` (400 `INVALID_ALGORAND_ADDRESS`).
 5. **Chain** resolution via `getChainConfig` (400 `UNSUPPORTED_CHAIN` if not one of the supported chain ids).
 6. **Build DorkFi repay group** (`buildDorkFiRepayGroup`): reads on-chain debt, applies `repayMode` / `repayAmount`, emits the atomic group. Can return `DORKFI_NOT_CONFIGURED`, `REPAY_EXCEEDS_DEBT`, `REPAY_AMOUNT_INVALID`, or 500 `INTERNAL_ERROR`.
@@ -85,7 +85,7 @@ The store is **in process memory**; restart clears it — not safe for multi-ins
 
 ## Configuration touchpoints
 
-- **Base gate:** `BASE_RPC_URL`, `PAYMENT_RECEIVER_ADDRESS`, `PAYMENT_TOKEN_ADDRESS`, `REQUIRED_PAYMENT_AMOUNT`, `PAYMENT_MAX_AGE_SECONDS` — see [.env.example](../.env.example).
+- **Base gate:** `BASE_RPC_URL`, `PAYMENT_RECEIVER_ADDRESS`, `PAYMENT_TOKEN_ADDRESS`, `REQUIRED_PAYMENT_AMOUNT`, `PAYMENT_MAX_AGE_SECONDS` (default `60`; set to `0` to accept payments of any age) — see [.env.example](../.env.example).
 - **Repay build:** Algod URLs per chain, `DORKFI_*` keys, optional `DORKFI_LENDING_POOL_APP_ID`, `REPAY_MAX_BUFFER_BASE_UNITS`.
 - **Execute only:** `SERVER_SIGNER_MNEMONIC` must match `userAddress` (custodial or rekeyed signer).
 - **Optional auth:** [Webhook API keys](webhook-api-keys.md).
