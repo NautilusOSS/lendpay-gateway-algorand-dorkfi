@@ -1,5 +1,7 @@
 # DorkFi gateway docs
 
+- **[Install on Ubuntu as a systemd service](install-ubuntu-service.md)** — production-style deploy with `systemd`, journal logs, and upgrades.
+
 ## Webhook API keys
 
 When `WEBHOOK_API_KEY` or `WEBHOOK_API_KEYS` is set, `POST /webhook/repay` and `POST /webhook/repay/execute` require a key via the `x-api-key` header or `Authorization: Bearer <key>`. See [.env.example](../.env.example).
