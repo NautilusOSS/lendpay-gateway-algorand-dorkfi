@@ -15,8 +15,10 @@
   },
   "dependencies": {
     "algosdk": "^3.0.0",
+    "arccjs": "^3.0.4",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "ulujs": "^3.0.2",
     "viem": "^2.21.54",
     "zod": "^3.24.1"
   },

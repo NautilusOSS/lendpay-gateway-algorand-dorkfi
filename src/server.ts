@@ -6,7 +6,9 @@ import repayRouter from "./routes/repay.js";
 import { defaultChainFromEnv, getChainConfig, listConfiguredChains } from "./config/chains.js";
 import { makeAlgodClient } from "./services/algorand.js";
 import { fetchMarketDebtSnapshot } from "./services/dorkfi.js";
+import { readAlgodHttpStatus } from "./lib/algodHttp.js";
 import { log } from "./lib/logger.js";
+import { getPaymentMaxAgeSeconds } from "./services/basePayment.js";
 
 const chainQuerySchema = z.enum([
   "algorand-mainnet",
@@ -29,9 +31,17 @@ app.get("/chains", (_req, res) => {
   });
 });
 
-app.get("/markets/:marketAppId/debt/:userAddress", async (req, res, next) => {
+app.get("/pools/:poolAppId/markets/:marketAppId/debt/:userAddress", async (req, res, next) => {
+  let chain: z.infer<typeof chainQuerySchema> | undefined;
+  let poolAppId = 0;
+  let marketAppId = 0;
   try {
-    const marketAppId = Number(req.params.marketAppId);
+    poolAppId = Number(req.params.poolAppId);
+    if (!Number.isFinite(poolAppId) || poolAppId <= 0) {
+      res.status(400).json({ ok: false, error: "VALIDATION_ERROR", message: "Invalid poolAppId" });
+      return;
+    }
+    marketAppId = Number(req.params.marketAppId);
     if (!Number.isFinite(marketAppId) || marketAppId <= 0) {
       res.status(400).json({ ok: false, error: "VALIDATION_ERROR", message: "Invalid marketAppId" });
       return;
@@ -45,19 +55,8 @@ app.get("/markets/:marketAppId/debt/:userAddress", async (req, res, next) => {
       });
       return;
     }
-    const assetIdRaw = req.query.assetId;
-    if (typeof assetIdRaw !== "string" || !/^\d+$/.test(assetIdRaw)) {
-      res.status(400).json({
-        ok: false,
-        error: "VALIDATION_ERROR",
-        message: "Query parameter assetId (positive integer) is required",
-      });
-      return;
-    }
-    const assetId = Number(assetIdRaw);
 
     const chainParam = req.query.chain;
-    let chain: z.infer<typeof chainQuerySchema>;
     if (chainParam === undefined || chainParam === "") {
       chain = defaultChainFromEnv();
     } else if (typeof chainParam !== "string") {
@@ -82,21 +81,47 @@ app.get("/markets/:marketAppId/debt/:userAddress", async (req, res, next) => {
 
     const cfg = getChainConfig(chain);
     const algod = makeAlgodClient(cfg.algod);
-    const snapshot = await fetchMarketDebtSnapshot(algod, marketAppId, userAddress, assetId);
+    const snapshot = await fetchMarketDebtSnapshot(algod, poolAppId, marketAppId, userAddress);
     res.json({
       ok: true,
       chain,
+      poolAppId,
       marketAppId,
+      underlyingContractId: marketAppId,
       userAddress,
-      assetId,
+      assetId: snapshot.resolvedAssetId,
       configured: snapshot.configured,
+      ...(snapshot.notConfiguredReason ? { notConfiguredReason: snapshot.notConfiguredReason } : {}),
       borrowIndex: snapshot.borrowIndex.toString(),
+      scaledDeposits: snapshot.scaledDeposits.toString(),
       scaledBorrows: snapshot.scaledBorrows.toString(),
+      totalScaledDeposits: snapshot.totalScaledDeposits.toString(),
+      totalScaledBorrows: snapshot.totalScaledBorrows.toString(),
       currentDebtBaseUnits: snapshot.currentDebt.toString(),
       currentDebtFormatted: snapshot.currentDebtFormatted,
       decimals: snapshot.decimals,
     });
   } catch (e) {
+    const httpStatus = readAlgodHttpStatus(e);
+    if (httpStatus === 404) {
+      log.warn("debt_snapshot_not_found", { poolAppId, marketAppId, chain, err: String(e) });
+      res.status(404).json({
+        ok: false,
+        error: "CHAIN_RESOURCE_NOT_FOUND",
+        message:
+          "Algod returned 404: the pool or market application or resolved debt ASA does not exist on this network, or the account has no local state for the market. Check poolAppId, marketAppId, and chain match your Algod endpoint.",
+      });
+      return;
+    }
+    if (httpStatus !== undefined) {
+      log.warn("debt_snapshot_algod_http", { poolAppId, marketAppId, chain, httpStatus, err: String(e) });
+      res.status(502).json({
+        ok: false,
+        error: "ALGOD_ERROR",
+        message: `Algod request failed (HTTP ${httpStatus})`,
+      });
+      return;
+    }
     next(e);
   }
 });
@@ -115,5 +140,8 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
 
 const port = Number(process.env.PORT ?? "3000");
 app.listen(port, () => {
-  log.info("server_listen", { port });
+  log.info("server_listen", {
+    port,
+    paymentMaxAgeSeconds: getPaymentMaxAgeSeconds(),
+  });
 });

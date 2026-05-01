@@ -5,8 +5,9 @@ import type { ApiErrorResponse, ExecutedRepaySuccess, UnsignedRepaySuccess } fro
 import { getChainConfig } from "../config/chains.js";
 import { makeAlgodClient, addressFromMnemonic, signTxnsWithMnemonic, sendAndConfirmGroup } from "../services/algorand.js";
 import { validateBasePaymentReceipt, PaymentValidationError } from "../services/basePayment.js";
-import { buildDorkFiRepayGroup } from "../services/dorkfi.js";
+import { buildDorkFiRepayGroup, DorkfiNotConfiguredError } from "../services/dorkfi.js";
 import { resolvePaymentIdempotency, recordSuccessfulRepay } from "../lib/idempotency.js";
+import { describeAlgodFailure, httpStatusForAlgodFailure } from "../lib/algodHttp.js";
 import { log } from "../lib/logger.js";
 import { requireWebhookApiKey } from "../lib/webhookApiKey.js";
 
@@ -29,6 +30,10 @@ function jsonError(res: express.Response, status: number, body: ApiErrorResponse
   return res.status(status).json(body);
 }
 
+function canonicalAlgorandAddress(addr: string): string {
+  return algosdk.encodeAddress(algosdk.decodeAddress(addr).publicKey);
+}
+
 async function handleRepay(
   req: express.Request,
   res: express.Response,
@@ -48,7 +53,11 @@ async function handleRepay(
   const body = parsed.data;
   const requestId = body.requestId ?? null;
 
-  const idem = resolvePaymentIdempotency(body.basePaymentTxId, body.requestId);
+  const idem = resolvePaymentIdempotency(
+    body.basePaymentTxId,
+    body.requestId,
+    execute ? "executed" : "unsigned",
+  );
   if (idem.kind === "replay") {
     res.json(idem.response);
     return;
@@ -74,11 +83,22 @@ async function handleRepay(
     return;
   }
 
-  if (!algosdk.isValidAddress(body.userAddress)) {
+  const borrower = body.userAddress.trim();
+  if (!algosdk.isValidAddress(borrower)) {
     jsonError(res, 400, {
       ok: false,
       error: "INVALID_ALGORAND_ADDRESS",
       message: "userAddress is not a valid Algorand address",
+    });
+    return;
+  }
+
+  const payer = body.payerAddress?.trim() ? body.payerAddress.trim() : borrower;
+  if (!algosdk.isValidAddress(payer)) {
+    jsonError(res, 400, {
+      ok: false,
+      error: "INVALID_ALGORAND_ADDRESS",
+      message: "payerAddress is not a valid Algorand address",
     });
     return;
   }
@@ -101,25 +121,27 @@ async function handleRepay(
   try {
     built = await buildDorkFiRepayGroup({
       algod,
-      sender: body.userAddress,
-      userAddress: body.userAddress,
+      payerAddress: payer,
+      userAddress: borrower,
       marketAppId: body.marketAppId,
       assetId: body.assetId,
       repayMode: body.repayMode,
       repayAmount: body.repayAmount,
       repayMaxBufferBaseUnits: repayMaxBuffer(),
+      chainId: body.chain,
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (msg === "DORKFI_NOT_CONFIGURED") {
+    if (e instanceof DorkfiNotConfiguredError) {
+      const d = e.details;
       jsonError(res, 503, {
         ok: false,
         error: "DORKFI_NOT_CONFIGURED",
-        message:
-          "Set DORKFI_BORROW_INDEX_GLOBAL_KEY and DORKFI_SCALED_BORROW_LOCAL_KEY to UTF-8 TEAL keys for this market",
+        message: `${d.reason} Context: DORKFI_LENDING_POOL_APP_ID=${d.dorkfiLendingPoolAppIdEnv || "(unset; using marketAppId as pool)"}, effective poolAppId=${d.poolAppId}, marketAppId (underlyingContractId)=${d.marketAppId}, webhook assetId=${d.assetId}, userAddress=${d.userAddress}. Align assetId with GET /pools/:poolAppId/markets/:marketAppId/debt/:userAddress when configured is true.`,
+        details: d,
       });
       return;
     }
+    const msg = e instanceof Error ? e.message : String(e);
     if (msg === "REPAY_EXCEEDS_DEBT") {
       jsonError(res, 400, {
         ok: false,
@@ -168,12 +190,24 @@ async function handleRepay(
   }
 
   const signerAddr = addressFromMnemonic(mnemonic);
-  if (signerAddr !== body.userAddress) {
+  const signerCanon = canonicalAlgorandAddress(signerAddr);
+  const payerCanon = canonicalAlgorandAddress(payer);
+  if (signerCanon !== payerCanon) {
+    const payerIsBorrower = payerCanon === canonicalAlgorandAddress(borrower);
     jsonError(res, 400, {
       ok: false,
       error: "SIGNER_MISMATCH",
-      message:
-        "Execute mode requires SERVER_SIGNER_MNEMONIC to derive the same address as userAddress (rekey or custodial pattern)",
+      message: `SERVER_SIGNER_MNEMONIC derives ${signerCanon} but this request's payer is ${payerCanon}${
+        payerIsBorrower
+          ? " (payer defaulted from userAddress — use a mnemonic for that borrower, or set payerAddress to the account your mnemonic controls)."
+          : " (set payerAddress to the account your mnemonic controls, or change SERVER_SIGNER_MNEMONIC)."
+      }`,
+      details: {
+        mnemonicDerives: signerCanon,
+        payerAddress: payerCanon,
+        userAddress: canonicalAlgorandAddress(borrower),
+        payerIsBorrower,
+      },
     });
     return;
   }
@@ -186,11 +220,13 @@ async function handleRepay(
     confirmedRound = out.confirmedRound;
     txIds = out.txIds;
   } catch (e) {
-    log.error("algorand_submit_failed", { err: String(e) });
-    jsonError(res, 502, {
+    const desc = describeAlgodFailure(e);
+    log.error("algorand_submit_failed", { ...desc.details, err: String(e) });
+    jsonError(res, httpStatusForAlgodFailure(desc), {
       ok: false,
-      error: "INTERNAL_ERROR",
-      message: "Algorand submission or confirmation failed",
+      error: "ALGOD_ERROR",
+      message: desc.clientMessage,
+      details: desc.details,
     });
     return;
   }

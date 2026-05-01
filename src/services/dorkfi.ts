@@ -1,102 +1,133 @@
 import algosdk from "algosdk";
+import type { ChainId } from "../types.js";
 import { WAD, applyBorrowIndex, formatUnits, parseUnits } from "../lib/amounts.js";
-import { buildArc200TransferOrApproveTxns } from "./arc200.js";
+import { readUserDebtFromLendingPool } from "./lendingPoolAbi.js";
+import { buildRepayOnBehalfGroupArccjs } from "./repayGroupArccjs.js";
 import { log } from "../lib/logger.js";
-
-type TealValue = { type: number; uint: bigint; bytes: Uint8Array };
-type TealKeyValue = { key: Uint8Array; value: TealValue };
 
 export type MarketDebtSnapshot = {
   borrowIndex: bigint;
   scaledBorrows: bigint;
+  scaledDeposits: bigint;
+  totalScaledDeposits: bigint;
+  totalScaledBorrows: bigint;
   currentDebt: bigint;
   decimals: number;
   configured: boolean;
   /** Human-readable debt for previews */
   currentDebtFormatted: string;
+  /** ASA used for decimals / formatting (underlying ASA, nToken ASA from `get_market`, or `assetIdOverride`). */
+  resolvedAssetId: number | null;
+  /** When `configured` is false, why the snapshot could not be finalized (simulation, ASA lookup, etc.). */
+  notConfiguredReason?: string;
 };
 
-function bufferFromKey(key: string | Uint8Array): Buffer {
-  return Buffer.isBuffer(key) ? key : Buffer.from(key);
+export type MarketDebtSnapshotOptions = {
+  /**
+   * When set (e.g. repay webhook `assetId`), use this ASA for decimals instead of inferring from `get_market`.
+   */
+  assetIdOverride?: number;
+};
+
+function unconfiguredSnapshot(partial: Partial<MarketDebtSnapshot>): MarketDebtSnapshot {
+  return {
+    borrowIndex: partial.borrowIndex ?? WAD,
+    scaledBorrows: partial.scaledBorrows ?? 0n,
+    scaledDeposits: partial.scaledDeposits ?? 0n,
+    totalScaledDeposits: partial.totalScaledDeposits ?? 0n,
+    totalScaledBorrows: partial.totalScaledBorrows ?? 0n,
+    currentDebt: 0n,
+    decimals: partial.decimals ?? 0,
+    configured: false,
+    currentDebtFormatted: "0",
+    resolvedAssetId: partial.resolvedAssetId ?? null,
+    notConfiguredReason: partial.notConfiguredReason,
+  };
 }
 
-function findTealValue(rows: TealKeyValue[] | undefined, keyUtf8: string): TealValue | undefined {
-  if (!rows) {
-    return undefined;
-  }
-  const want = Buffer.from(keyUtf8, "utf8");
-  for (const row of rows) {
-    if (bufferFromKey(row.key).equals(want)) {
-      return row.value;
-    }
-  }
-  return undefined;
-}
-
-function tealValueToUint(v: TealValue | undefined): bigint | null {
-  if (!v) {
-    return null;
-  }
-  if (v.type === 2) {
-    return v.uint;
-  }
-  if (v.type === 1 && v.bytes.length > 0) {
-    return BigInt(`0x${Buffer.from(v.bytes).toString("hex")}`);
-  }
-  return null;
-}
-
-function readBorrowIndexKey(): string | undefined {
-  const k = process.env.DORKFI_BORROW_INDEX_GLOBAL_KEY?.trim();
-  return k && k.length > 0 ? k : undefined;
-}
-
-function readScaledBorrowKey(): string | undefined {
-  const k = process.env.DORKFI_SCALED_BORROW_LOCAL_KEY?.trim();
-  return k && k.length > 0 ? k : undefined;
-}
-
+/**
+ * Reads pool `get_market` / `get_user` via ABI simulation (same inputs as dorkfi-app `fetchUserDataFromChain`).
+ *
+ * @param marketAppId — `underlyingContractId` in app config (second arg to `get_user` / `get_market`).
+ */
 export async function fetchMarketDebtSnapshot(
   algod: algosdk.Algodv2,
+  poolAppId: number,
   marketAppId: number,
   userAddress: string,
-  assetId: number,
+  options?: MarketDebtSnapshotOptions,
 ): Promise<MarketDebtSnapshot> {
-  const borrowKey = readBorrowIndexKey();
-  const scaledKey = readScaledBorrowKey();
-  const configured = Boolean(borrowKey && scaledKey);
+  const read = await readUserDebtFromLendingPool(
+    algod,
+    poolAppId,
+    marketAppId,
+    userAddress,
+    options?.assetIdOverride,
+  );
+  if (!read.ok) {
+    log.warn("lending_pool_debt_read_failed", {
+      message: read.message,
+      poolAppId,
+      underlyingContractId: marketAppId,
+    });
+    return unconfiguredSnapshot({
+      notConfiguredReason: read.message,
+    });
+  }
 
-  const app = await algod.getApplicationByID(marketAppId).do();
-  const globalRows = app.params.globalState as TealKeyValue[] | undefined;
+  const {
+    borrowIndex,
+    scaledBorrows,
+    scaledDeposits,
+    totalScaledDeposits,
+    totalScaledBorrows,
+    resolvedAssetId,
+  } = read.data;
+  const positionPartial = {
+    borrowIndex,
+    scaledBorrows,
+    scaledDeposits,
+    totalScaledDeposits,
+    totalScaledBorrows,
+    resolvedAssetId,
+  };
+  if (resolvedAssetId === null) {
+    return unconfiguredSnapshot({
+      ...positionPartial,
+      notConfiguredReason:
+        "Could not resolve debt ASA id (underlying is not an ASA on this network and nToken id from get_market is missing or invalid). Omit repay `assetId` to infer from the pool, or pass the `assetId` returned by GET /pools/:poolAppId/markets/:marketAppId/debt/:userAddress.",
+    });
+  }
+  if (borrowIndex <= 0n) {
+    return unconfiguredSnapshot({
+      ...positionPartial,
+      notConfiguredReason: `Invalid borrow_index (${borrowIndex.toString()}) from get_market simulation.`,
+    });
+  }
 
-  const acctApp = await algod.accountApplicationInformation(userAddress, marketAppId).do();
-  const localRows = acctApp.appLocalState?.keyValue as TealKeyValue[] | undefined;
-
-  const borrowIndex = borrowKey ? tealValueToUint(findTealValue(globalRows, borrowKey)) : null;
-  const scaledBorrows = scaledKey ? tealValueToUint(findTealValue(localRows, scaledKey)) : null;
-
-  const asset = await algod.getAssetByID(assetId).do();
-  const decimals = Number(asset.params.decimals ?? 0);
-
-  if (!configured || borrowIndex === null || scaledBorrows === null || borrowIndex <= 0n) {
-    return {
-      borrowIndex: borrowIndex ?? WAD,
-      scaledBorrows: scaledBorrows ?? 0n,
-      currentDebt: 0n,
-      decimals,
-      configured: false,
-      currentDebtFormatted: "0",
-    };
+  let decimals = 0;
+  try {
+    const asset = await algod.getAssetByID(resolvedAssetId).do();
+    decimals = Number(asset.params.decimals ?? 0);
+  } catch {
+    return unconfiguredSnapshot({
+      ...positionPartial,
+      notConfiguredReason: `Algod could not load ASA ${resolvedAssetId} (wrong repay assetId, asset on another network, or typo). Compare with GET .../debt/... \`assetId\` when the pool resolves the debt token.`,
+    });
   }
 
   const currentDebt = applyBorrowIndex(scaledBorrows, borrowIndex);
   return {
     borrowIndex,
     scaledBorrows,
+    scaledDeposits,
+    totalScaledDeposits,
+    totalScaledBorrows,
     currentDebt,
     decimals,
     configured: true,
     currentDebtFormatted: formatUnits(currentDebt, decimals),
+    resolvedAssetId,
   };
 }
 
@@ -105,35 +136,74 @@ export type RepayBuildResult = {
   transactions: algosdk.Transaction[];
 };
 
+export type DorkfiNotConfiguredDetails = {
+  reason: string;
+  poolAppId: number;
+  marketAppId: number;
+  assetId: number;
+  userAddress: string;
+  /** Raw `DORKFI_LENDING_POOL_APP_ID` env (empty if unset). */
+  dorkfiLendingPoolAppIdEnv: string;
+};
+
+export class DorkfiNotConfiguredError extends Error {
+  readonly details: DorkfiNotConfiguredDetails;
+
+  constructor(details: DorkfiNotConfiguredDetails) {
+    super(details.reason);
+    this.name = "DorkfiNotConfiguredError";
+    this.details = details;
+  }
+}
+
 /**
- * TODO: Replace `repay` placeholder selector with the real DorkFi ABI / TEAL method selector.
- * TODO: Add `sync_market` selector + foreign apps/assets/boxes for pool + market wiring.
- * TODO: Confirm repay app args encoding (uint128 / btoi layout) against deployed contracts.
+ * Builds the full repay atomic group (nt200 wrap + approve + pool `repay_on_behalf`) via ulujs/arccjs,
+ * aligned with dorkfi-app. `uint64` market id in the pool call is **`marketAppId`** (`underlyingContractId`).
  */
 export async function buildDorkFiRepayGroup(params: {
   algod: algosdk.Algodv2;
-  sender: string;
+  /** Pays fees and holds ARC-200 balance for the axfer; must sign the group in execute mode. */
+  payerAddress: string;
+  /** Borrower whose debt is simulated and passed to the market app `repay_on_behalf` accounts. */
   userAddress: string;
   marketAppId: number;
   assetId: number;
   repayMode: "exact" | "max";
   repayAmount: string;
   repayMaxBufferBaseUnits?: bigint;
+  chainId: ChainId;
 }): Promise<RepayBuildResult> {
   const {
     algod,
-    sender,
+    payerAddress,
     userAddress,
     marketAppId,
     assetId,
     repayMode,
     repayAmount,
     repayMaxBufferBaseUnits = 0n,
+    chainId,
   } = params;
 
-  const snapshot = await fetchMarketDebtSnapshot(algod, marketAppId, userAddress, assetId);
+  const poolRaw = process.env.DORKFI_LENDING_POOL_APP_ID?.trim();
+  const poolNum = poolRaw ? Number(poolRaw) : NaN;
+  const poolAppId =
+    Number.isFinite(poolNum) && poolNum > 0 ? poolNum : marketAppId;
+
+  const snapshot = await fetchMarketDebtSnapshot(algod, poolAppId, marketAppId, userAddress, {
+    assetIdOverride: assetId,
+  });
   if (!snapshot.configured) {
-    throw new Error("DORKFI_NOT_CONFIGURED");
+    throw new DorkfiNotConfiguredError({
+      reason:
+        snapshot.notConfiguredReason ??
+        "Debt snapshot is not configured (pool simulation or ASA metadata incomplete).",
+      poolAppId,
+      marketAppId,
+      assetId,
+      userAddress,
+      dorkfiLendingPoolAppIdEnv: poolRaw ?? "",
+    });
   }
 
   const { currentDebt, decimals } = snapshot;
@@ -155,66 +225,23 @@ export async function buildDorkFiRepayGroup(params: {
     throw new Error("REPAY_EXCEEDS_DEBT");
   }
 
-  const suggestedParams = await algod.getTransactionParams().do();
-  const txns: algosdk.Transaction[] = [];
-
-  const poolIdRaw = process.env.DORKFI_LENDING_POOL_APP_ID?.trim();
-  const poolId = poolIdRaw ? Number(poolIdRaw) : NaN;
-  if (Number.isFinite(poolId) && poolId > 0 && poolId !== marketAppId) {
-    // TODO: Replace with real sync_market selector + accounts/assets/box refs.
-    const syncArgs = [new Uint8Array(Buffer.from("sync_market", "utf8"))];
-    txns.push(
-      algosdk.makeApplicationNoOpTxnFromObject({
-        sender,
-        suggestedParams,
-        appIndex: poolId,
-        appArgs: syncArgs,
-        // TODO: foreignApps / foreignAssets / boxes / account references
-      }),
-    );
-  }
-
-  txns.push(
-    ...buildArc200TransferOrApproveTxns({
-      sender,
-      marketAppId,
-      assetId,
-      repayAmountBaseUnits,
-      suggestedParams,
-    }),
-  );
-
-  // TODO: foreignApps must include lending pool / ARC-200 controller when required.
-  const foreignApps: number[] = [];
-  if (Number.isFinite(poolId) && poolId > 0 && poolId !== marketAppId) {
-    foreignApps.push(poolId);
-  }
-
-  const repaySelector = new Uint8Array(Buffer.from("repay", "utf8"));
-  const repayArgs = [
-    repaySelector,
-    // TODO: append uint BE args for amount / mode per DorkFi contract ABI
-  ];
-
-  txns.push(
-    algosdk.makeApplicationNoOpTxnFromObject({
-      sender,
-      suggestedParams,
-      appIndex: marketAppId,
-      appArgs: repayArgs,
-      accounts: [userAddress, algosdk.getApplicationAddress(marketAppId)],
-      foreignAssets: [assetId],
-      foreignApps: foreignApps.length ? foreignApps : undefined,
-      // TODO: boxes for user borrow slot / market cache
-    }),
-  );
-
-  algosdk.assignGroupID(txns);
+  const txns = await buildRepayOnBehalfGroupArccjs({
+    algod,
+    payerAddress,
+    borrowerAddress: userAddress,
+    poolAppId,
+    tokenAppId: marketAppId,
+    underlyingAsaId: assetId,
+    repayAmountBaseUnits,
+    chainId,
+  });
   log.info("dorkfi_repay_group_built", {
     marketAppId,
     assetId,
     repayMode,
     repayAmountBaseUnits: repayAmountBaseUnits.toString(),
+    borrower: userAddress,
+    payer: payerAddress,
   });
 
   return { repayAmountBaseUnits, transactions: txns };

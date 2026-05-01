@@ -25,6 +25,8 @@ export type ApiErrorCode =
   | "DORKFI_NOT_CONFIGURED"
   | "EXECUTE_NOT_CONFIGURED"
   | "SIGNER_MISMATCH"
+  | "CHAIN_RESOURCE_NOT_FOUND"
+  | "ALGOD_ERROR"
   | "INTERNAL_ERROR";
 
 export type ApiErrorResponse = {
