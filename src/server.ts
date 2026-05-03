@@ -100,6 +100,7 @@ app.get("/pools/:poolAppId/markets/:marketAppId/debt/:userAddress", async (req, 
       currentDebtBaseUnits: snapshot.currentDebt.toString(),
       currentDebtFormatted: snapshot.currentDebtFormatted,
       decimals: snapshot.decimals,
+      ...(snapshot.decimalsSource ? { decimalsSource: snapshot.decimalsSource } : {}),
     });
   } catch (e) {
     const httpStatus = readAlgodHttpStatus(e);

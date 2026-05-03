@@ -1,6 +1,8 @@
 import algosdk from "algosdk";
 import type { ChainId } from "../types.js";
 import { WAD, applyBorrowIndex, formatUnits, parseUnits } from "../lib/amounts.js";
+import type { AlgodDecimalsSource } from "../lib/algodAssetOrAppDecimals.js";
+import { loadAlgorandAssetOrAppDecimals } from "../lib/algodAssetOrAppDecimals.js";
 import { readUserDebtFromLendingPool } from "./lendingPoolAbi.js";
 import { buildRepayOnBehalfGroupArccjs } from "./repayGroupArccjs.js";
 import { log } from "../lib/logger.js";
@@ -16,15 +18,20 @@ export type MarketDebtSnapshot = {
   configured: boolean;
   /** Human-readable debt for previews */
   currentDebtFormatted: string;
-  /** ASA used for decimals / formatting (underlying ASA, nToken ASA from `get_market`, or `assetIdOverride`). */
+  /**
+   * Pool-resolved token id: underlying ASA, or nToken **application** id from `get_market` when the market is ARC-200.
+   * Repay webhooks still pass the **underlying ASA** id for nt200 `deposit` (`xaid`), not this app id when it is an app.
+   */
   resolvedAssetId: number | null;
+  /** Whether decimals came from ASA metadata or an ARC-200-style app global `decimals`. */
+  decimalsSource?: AlgodDecimalsSource;
   /** When `configured` is false, why the snapshot could not be finalized (simulation, ASA lookup, etc.). */
   notConfiguredReason?: string;
 };
 
 export type MarketDebtSnapshotOptions = {
   /**
-   * When set (e.g. repay webhook `assetId`), use this ASA for decimals instead of inferring from `get_market`.
+   * When set (e.g. repay webhook `assetId`), use this id for decimals resolution instead of inferring from `get_market`.
    */
   assetIdOverride?: number;
 };
@@ -105,14 +112,11 @@ export async function fetchMarketDebtSnapshot(
     });
   }
 
-  let decimals = 0;
-  try {
-    const asset = await algod.getAssetByID(resolvedAssetId).do();
-    decimals = Number(asset.params.decimals ?? 0);
-  } catch {
+  const meta = await loadAlgorandAssetOrAppDecimals(algod, resolvedAssetId);
+  if (meta === undefined) {
     return unconfiguredSnapshot({
       ...positionPartial,
-      notConfiguredReason: `Algod could not load ASA ${resolvedAssetId} (wrong repay assetId, asset on another network, or typo). Compare with GET .../debt/... \`assetId\` when the pool resolves the debt token.`,
+      notConfiguredReason: `Could not resolve decimals for id ${resolvedAssetId} (not an ASA on this network and not an app with global uint key "decimals"). For ARC-200 nToken markets, debt preview uses the nToken app id from get_market; POST /webhook/repay still needs the underlying ASA id for nt200 deposit (e.g. mainnet USDC 31566704 for the example USDC market).`,
     });
   }
 
@@ -124,9 +128,10 @@ export async function fetchMarketDebtSnapshot(
     totalScaledDeposits,
     totalScaledBorrows,
     currentDebt,
-    decimals,
+    decimals: meta.decimals,
+    decimalsSource: meta.source,
     configured: true,
-    currentDebtFormatted: formatUnits(currentDebt, decimals),
+    currentDebtFormatted: formatUnits(currentDebt, meta.decimals),
     resolvedAssetId,
   };
 }

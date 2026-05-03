@@ -136,7 +136,7 @@ async function handleRepay(
       jsonError(res, 503, {
         ok: false,
         error: "DORKFI_NOT_CONFIGURED",
-        message: `${d.reason} Context: DORKFI_LENDING_POOL_APP_ID=${d.dorkfiLendingPoolAppIdEnv || "(unset; using marketAppId as pool)"}, effective poolAppId=${d.poolAppId}, marketAppId (underlyingContractId)=${d.marketAppId}, webhook assetId=${d.assetId}, userAddress=${d.userAddress}. Align assetId with GET /pools/:poolAppId/markets/:marketAppId/debt/:userAddress when configured is true.`,
+        message: `${d.reason} Context: DORKFI_LENDING_POOL_APP_ID=${d.dorkfiLendingPoolAppIdEnv || "(unset; using marketAppId as pool)"}, effective poolAppId=${d.poolAppId}, marketAppId (underlyingContractId)=${d.marketAppId}, webhook assetId=${d.assetId}, userAddress=${d.userAddress}. For nt200 markets, webhook assetId must be the underlying ASA used in deposit (xaid), not the nToken app id from the debt preview. When the debt preview shows decimalsSource arc200_application, use your token’s underlying ASA (e.g. mainnet USDC 31566704) unless you know another id from your app config.`,
         details: d,
       });
       return;

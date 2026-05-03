@@ -49,8 +49,8 @@ Lists supported logical chains and echoes `DEFAULT_CHAIN`.
 ### `GET /pools/:poolAppId/markets/:marketAppId/debt/:userAddress?chain=`
 
 Preview on-chain debt via the lending pool’s **`get_market`** / **`get_user`** ABI (same pattern as [dorkfi-app `fetchUserDataFromChain`](https://github.com/DorkFi/dorkfi-app/blob/next/src/services/lendingService.ts#L1376)): path `marketAppId` is the pool’s **`underlyingContractId`** (e.g. USDC market id). Optional `chain` query; defaults to `DEFAULT_CHAIN`.  
-Response includes `assetId` / `underlyingContractId` when resolved (use `assetId` with `POST /webhook/repay` when it is the repay ASA).  
-Returns `configured: false` if ABI simulation or ASA metadata lookup fails.  
+Response includes **`assetId`** (pool-resolved token: underlying ASA or **nToken application** id) and optional **`decimalsSource`** (`asa` vs `arc200_application`). For nt200 markets, **`POST /webhook/repay`** `assetId` must be the **underlying ASA** used in `deposit` (`xaid`), not the nToken app id — see [manual testing §3](docs/manual-testing.md).  
+Returns `configured: false` if ABI simulation or decimals metadata lookup fails.  
 JSON includes **`scaledDeposits` / `scaledBorrows`** (user `get_user`) and **`totalScaledDeposits` / `totalScaledBorrows`** (market `get_market` aggregates), all as decimal integer strings.
 
 Example (Algorand mainnet): pool **3333688282** (Algorand A), market **3210682240** (USDC) — `GET /pools/3333688282/markets/3210682240/debt/<algorand-address>?chain=algorand-mainnet`.
@@ -102,7 +102,7 @@ Used Base tx ids are stored **in memory** (Map), with **separate** cached succes
 
 ## cURL examples
 
-Replace placeholders. For payment demos you need a **real recent successful Base tx** paying the configured receiver/token/amount. For **`marketAppId`** / **`assetId`**, use the same **`underlyingContractId`** and resolved **`assetId`** as in [manual testing §3](docs/manual-testing.md) (example USDC market **3210682240**, ASA **3333764003** — confirm with your debt GET).
+Replace placeholders. For payment demos you need a **real recent successful Base tx** paying the configured receiver/token/amount. For **`marketAppId`**, use **`underlyingContractId`** from your pool (example USDC market **3210682240**). For repay **`assetId`**, use the **underlying ASA** for nt200 wrap (mainnet USDC **31566704** for that example), not the nToken app id when the debt preview shows **`decimalsSource":"arc200_application"`** — see [manual testing §3](docs/manual-testing.md).
 
 If `WEBHOOK_API_KEY` / `WEBHOOK_API_KEYS` is set in `.env`, add `-H "x-api-key: <key>"` (or `Authorization: Bearer <key>`) to each repay curl or you get **`401` `UNAUTHORIZED`**. See [docs/webhook-api-keys.md](docs/webhook-api-keys.md).
 
@@ -114,7 +114,7 @@ curl -sS -X POST "http://localhost:3000/webhook/repay" \
   -d '{
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -133,7 +133,7 @@ curl -sS -X POST "http://localhost:3000/webhook/repay/execute" \
   -d '{
     "userAddress":"SAME_AS_MNEMONIC_DERIVED_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -152,7 +152,7 @@ curl -sS -X POST "http://localhost:3000/webhook/repay" \
   -d '{
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -174,7 +174,7 @@ curl -sS -X POST "http://localhost:3000/webhook/repay" \
   -d '{
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",

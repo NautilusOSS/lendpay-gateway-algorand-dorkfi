@@ -47,7 +47,9 @@ Uses Algod only; good sanity check before repay.
 curl -sS "$BASE_URL/pools/3333688282/markets/3210682240/debt/YOUR_ALGORAND_ADDR?chain=algorand-mainnet" | jq .
 ```
 
-Use a real **pool** id and **`underlyingContractId`** as `marketAppId` (same pair as dorkfi-app `get_user` / `get_market`; the example USDC id **3210682240** is that contract id). Debt is read via **ABI simulation** on the pool — no TEAL key env vars. If simulation or ASA lookup fails, `configured` is **false**.
+Use a real **pool** id and **`underlyingContractId`** as `marketAppId` (same pair as dorkfi-app `get_user` / `get_market`; the example USDC id **3210682240** is that contract id). Debt is read via **ABI simulation** on the pool — no TEAL key env vars. Decimals come from the resolved token as either an ASA (`decimalsSource`: **`asa`**) or an ARC-200 **nToken application** (`decimalsSource`: **`arc200_application`**, reading global `decimals`). If simulation or that metadata read fails, `configured` is **false**.
+
+When **`decimalsSource`** is **`arc200_application`**, JSON **`assetId`** is the nToken **app** id from `get_market`, not the underlying ASA. **`POST /webhook/repay`** still needs the **underlying ASA** id for nt200 `deposit` (e.g. mainnet USDC **31566704** for this example market — match your token config / dorkfi-app `underlyingAssetId`).
 
 Invalid address returns **400**. Unknown apps or ASA usually return **404** `CHAIN_RESOURCE_NOT_FOUND`.
 
@@ -67,7 +69,7 @@ Obtain a hash from a block explorer or your own wallet (same network as `BASE_RP
 
 **Webhook API key:** If `.env` sets `WEBHOOK_API_KEY` or `WEBHOOK_API_KEYS`, every repay request **must** send that key or the server responds with **`401`** and **`"error":"UNAUTHORIZED"`** (not a payment/body validation error). For copy-paste testing without auth, comment those variables out and restart. Details: [webhook API keys](webhook-api-keys.md).
 
-**Before the curl:** Run §3 debt preview for your borrower. Use the same **`marketAppId`** as in the path (`underlyingContractId`). Set **`assetId`** to the JSON **`assetId`** from that response when **`configured`** is **`true`** (do not use a placeholder like `456`). Use a **recent** successful Base tx hash for **`basePaymentTxId`** that satisfies §4.
+**Before the curl:** Run §3 debt preview for your borrower. Use the same **`marketAppId`** as in the path (`underlyingContractId`). Set repay **`assetId`** to the **underlying ASA** used for nt200 wrap (same as dorkfi-app `underlyingAssetId` / `xaid`). If the debt preview shows **`decimalsSource":"asa"`** and a single ASA id, that same id is usually correct for repay. If it shows **`decimalsSource":"arc200_application"`**, the preview **`assetId`** is an app id — **do not** paste it into repay; use the underlying ASA (e.g. **31566704** for mainnet USDC here). Use a **recent** successful Base tx hash for **`basePaymentTxId`** that satisfies §4.
 
 **Self-repay** (borrower signs and pays; omit **`payerAddress`**) when **no** webhook key is configured:
 
@@ -77,7 +79,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay" \
   -d '{
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -86,7 +88,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay" \
   }' | jq .
 ```
 
-(`assetId` **3333764003** matches the example USDC market in §3; replace with your debt preview’s `assetId` if different.)
+(`assetId` **31566704** is the underlying mainnet USDC ASA for nt200 deposit in this example; see §3 when the debt preview uses **`arc200_application`**.)
 
 When a webhook key **is** configured, add the header (same body shape):
 
@@ -98,7 +100,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay" \
   -d '{
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -119,7 +121,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay" \
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "payerAddress":"YOUR_PAYER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -130,7 +132,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay" \
 
 **Success:** `ok: true`, `mode: "unsigned"`, non-empty `transactions` (base64), `repayAmountBaseUnits`. For **repay on behalf**, set optional **`payerAddress`** to the hot wallet that will sign and fund the ARC-200 transfer; **`userAddress`** stays the borrower (debt read + `repay_on_behalf` accounts). Execute mode checks the mnemonic against **`payerAddress`** (defaults to `userAddress`).
 
-**Common failures:** `UNAUTHORIZED` (missing/wrong key when `WEBHOOK_API_KEY*` is set), `PAYMENT_TOO_OLD` (Base tx block older than `PAYMENT_MAX_AGE_SECONDS`; see §4), other `PAYMENT_*` receipt errors, `VALIDATION_ERROR`, `UNSUPPORTED_CHAIN`, `DORKFI_NOT_CONFIGURED` (response `message` and `details` include the pool simulation / ASA reason — **`assetId` in the webhook body must match** the resolved debt ASA from `GET /pools/:poolAppId/markets/:marketAppId/debt/:userAddress` when that preview shows `configured: true`), `REPAY_EXCEEDS_DEBT`, `REPAY_AMOUNT_INVALID`.
+**Common failures:** `UNAUTHORIZED` (missing/wrong key when `WEBHOOK_API_KEY*` is set), `PAYMENT_TOO_OLD` (Base tx block older than `PAYMENT_MAX_AGE_SECONDS`; see §4), other `PAYMENT_*` receipt errors, `VALIDATION_ERROR`, `UNSUPPORTED_CHAIN`, `DORKFI_NOT_CONFIGURED` (wrong repay **`assetId`** for nt200 — use **underlying ASA**, not nToken app id when §3 shows **`arc200_application`**; see §5), `REPAY_EXCEEDS_DEBT`, `REPAY_AMOUNT_INVALID`.
 
 ## 6. Execute repay (`POST /webhook/repay/execute`)
 
@@ -147,7 +149,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay/execute" \
   -d '{
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -166,7 +168,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay/execute" \
     "userAddress":"YOUR_BORROWER_ALGORAND_ADDR",
     "payerAddress":"YOUR_PAYER_ALGORAND_ADDR",
     "marketAppId":3210682240,
-    "assetId":3333764003,
+    "assetId":31566704,
     "repayAmount":"0.1",
     "repayMode":"exact",
     "chain":"algorand-mainnet",
@@ -199,7 +201,7 @@ Expect `mode: "executed"`, `txIds`, `confirmedRound` on success. `EXECUTE_NOT_CO
 | Unknown `chain` | `UNSUPPORTED_CHAIN` |
 | `repayAmount` invalid for `exact` | `REPAY_AMOUNT_INVALID` |
 | `exact` amount above on-chain debt | `REPAY_EXCEEDS_DEBT` |
-| Repay `assetId` does not match debt ASA (e.g. placeholder `456` vs real ASA from debt GET) | `503` `DORKFI_NOT_CONFIGURED` — use `assetId` from `GET .../debt/...` when `configured: true` |
+| Repay `assetId` wrong (placeholder, wrong network, or nToken **app** id instead of underlying ASA for nt200) | `503` `DORKFI_NOT_CONFIGURED` — use underlying ASA for repay; see §3 `decimalsSource` |
 | Base tx confirmed but block older than `PAYMENT_MAX_AGE_SECONDS` (default 60s) | `PAYMENT_TOO_OLD` — use a newer tx, increase the env, or **`0`** to disable (§4) |
 
 ## 9. Logs
