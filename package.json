@@ -8,7 +8,9 @@
     "build": "tsc",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "script:repay-small-usdc": "tsx src/scripts/repaySmallUsdc.ts",
+    "script:test-repay-payer-balance": "tsx src/scripts/testRepayPayerBalance.ts"
   },
   "engines": {
     "node": ">=20"

@@ -71,7 +71,7 @@ Obtain a hash from a block explorer or your own wallet (same network as `BASE_RP
 
 **Before the curl:** Run §3 debt preview for your borrower. Use the same **`marketAppId`** as in the path (`underlyingContractId`). Set repay **`assetId`** to the **underlying ASA** used for nt200 wrap (same as dorkfi-app `underlyingAssetId` / `xaid`). If the debt preview shows **`decimalsSource":"asa"`** and a single ASA id, that same id is usually correct for repay. If it shows **`decimalsSource":"arc200_application"`**, the preview **`assetId`** is an app id — **do not** paste it into repay; use the underlying ASA (e.g. **31566704** for mainnet USDC here). Use a **recent** successful Base tx hash for **`basePaymentTxId`** that satisfies §4.
 
-**Self-repay** (borrower signs and pays; omit **`payerAddress`**) when **no** webhook key is configured:
+**Self-repay** (borrower signs and pays; omit **`payerAddress`**) when **no** webhook key is configured and **`SERVER_SIGNER_MNEMONIC` is unset** (otherwise the mnemonic account is always payer):
 
 ```bash
 curl -sS -X POST "$BASE_URL/webhook/repay" \
@@ -111,7 +111,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay" \
 
 (`Authorization: Bearer $WEBHOOK_API_KEY` works too.)
 
-**Repay on behalf** (optional **`payerAddress`** = hot wallet that will **`axfer`** and call **`repay_on_behalf`**; **`userAddress`** = borrower for debt read and app accounts):
+**Repay on behalf** (optional **`payerAddress`** only when **`SERVER_SIGNER_MNEMONIC` is unset** — hot wallet that will **`axfer`** and call **`repay_on_behalf`**; when the mnemonic is set, payer is always that account). **`userAddress`** = borrower for debt read and app accounts:
 
 ```bash
 curl -sS -X POST "$BASE_URL/webhook/repay" \
@@ -130,13 +130,13 @@ curl -sS -X POST "$BASE_URL/webhook/repay" \
   }' | jq .
 ```
 
-**Success:** `ok: true`, `mode: "unsigned"`, non-empty `transactions` (base64), `repayAmountBaseUnits`. For **repay on behalf**, set optional **`payerAddress`** to the hot wallet that will sign and fund the ARC-200 transfer; **`userAddress`** stays the borrower (debt read + `repay_on_behalf` accounts). Execute mode checks the mnemonic against **`payerAddress`** (defaults to `userAddress`).
+**Success:** `ok: true`, `mode: "unsigned"`, non-empty `transactions` (base64), `repayAmountBaseUnits`. For **repay on behalf** without **`SERVER_SIGNER_MNEMONIC`**, set optional **`payerAddress`** to the hot wallet that will sign and fund the ARC-200 transfer; with the mnemonic set, payer is always the mnemonic account. **`userAddress`** stays the borrower (debt read + `repay_on_behalf` accounts).
 
-**Common failures:** `UNAUTHORIZED` (missing/wrong key when `WEBHOOK_API_KEY*` is set), `PAYMENT_TOO_OLD` (Base tx block older than `PAYMENT_MAX_AGE_SECONDS`; see §4), other `PAYMENT_*` receipt errors, `VALIDATION_ERROR`, `UNSUPPORTED_CHAIN`, `DORKFI_NOT_CONFIGURED` (wrong repay **`assetId`** for nt200 — use **underlying ASA**, not nToken app id when §3 shows **`arc200_application`**; see §5), `REPAY_EXCEEDS_DEBT`, `REPAY_AMOUNT_INVALID`.
+**Common failures:** `UNAUTHORIZED` (missing/wrong key when `WEBHOOK_API_KEY*` is set), `PAYMENT_TOO_OLD` (Base tx block older than `PAYMENT_MAX_AGE_SECONDS`; see §4), other `PAYMENT_*` receipt errors, `VALIDATION_ERROR`, `UNSUPPORTED_CHAIN`, `DORKFI_NOT_CONFIGURED` (wrong repay **`assetId`** for nt200 — use **underlying ASA**, not nToken app id when §3 shows **`arc200_application`**; see §5), `REPAY_EXCEEDS_DEBT`, `REPAY_AMOUNT_INVALID`, `PAYER_INSUFFICIENT_BALANCE` (payer lacks underlying ASA for the built repay amount after build).
 
 ## 6. Execute repay (`POST /webhook/repay/execute`)
 
-Same JSON shape as §5, but the server **signs** with `SERVER_SIGNER_MNEMONIC` and submits the group. The mnemonic must derive **`payerAddress`** when set, otherwise **`userAddress`** (self-repay). **This spends real Algorand fees and can move loan state on-chain** — use testnet / small amounts unless you intend production effects.
+Same JSON shape as §5, but the server **signs** with `SERVER_SIGNER_MNEMONIC` and submits the group. When the mnemonic env is set, **payer** is always that account (body `payerAddress` ignored). When unset, payer comes from **`payerAddress`** or **`userAddress`** and the mnemonic must match that payer. **This spends real Algorand fees and can move loan state on-chain** — use testnet / small amounts unless you intend production effects.
 
 Use a **new** `basePaymentTxId` (and usually a new `requestId`) from a fresh Base payment if you already consumed a prior hash. Omit `-H "x-api-key: …"` when webhook keys are **not** set in `.env` (see §5).
 
@@ -158,7 +158,7 @@ curl -sS -X POST "$BASE_URL/webhook/repay/execute" \
   }' | jq .
 ```
 
-**On-behalf execute** (mnemonic = **`payerAddress`**, not the borrower):
+**On-behalf execute** (mnemonic = payer; when env is set, not the borrower unless same keys):
 
 ```bash
 curl -sS -X POST "$BASE_URL/webhook/repay/execute" \
@@ -177,7 +177,18 @@ curl -sS -X POST "$BASE_URL/webhook/repay/execute" \
   }' | jq .
 ```
 
-Expect `mode: "executed"`, `txIds`, `confirmedRound` on success. `EXECUTE_NOT_CONFIGURED` if the mnemonic env is missing; **`SIGNER_MISMATCH`** if the mnemonic does not match **`payerAddress`** (or **`userAddress`** when `payerAddress` is omitted).
+Expect `mode: "executed"`, `txIds`, `confirmedRound` on success. `EXECUTE_NOT_CONFIGURED` if the mnemonic env is missing or invalid; **`SIGNER_MISMATCH`** only when the mnemonic env is **unset** and the mnemonic does not match **`payerAddress`** / **`userAddress`**.
+
+### KeeperHub workflow URLs
+
+Workflow runners (e.g. KeeperHub) often require **`HTTP 200`** with explicit JSON so the step records **completion**. Use the **same JSON body** as §5–§6, but call:
+
+- **`POST $BASE_URL/webhook/keeperhub/repay`** — unsigned group (same behavior as `/webhook/repay`).
+- **`POST $BASE_URL/webhook/keeperhub/repay/execute`** — sign + submit (same as `/webhook/repay/execute`).
+
+Responses always use **`Content-Type: application/json; charset=utf-8`**. **Success:** `{ "success": true, "status": "completed", "message": "Webhook processed successfully", "result": { "requestId", "mode", "txId", … } }`. **Failure:** `{ "success": false, "status": "failed", "message", "error", "result": { "requestId", "code", "details?" } }` with **HTTP 200** so the step is not treated as a transport hang. Gateway routes (`/webhook/repay*`) keep **`{ ok: … }`** and classic status codes (`400`, `503`, …).
+
+Idempotency **lanes** (`unsigned` vs `executed`) are shared with the gateway paths: the same `basePaymentTxId` + `requestId` hits the same cache whether you call `/webhook/repay` or `/webhook/keeperhub/repay`; replay responses follow the **route you called** (KeeperHub shape only from the KeeperHub paths).
 
 ## 7. Idempotency
 
@@ -197,7 +208,7 @@ Expect `mode: "executed"`, `txIds`, `confirmedRound` on success. `EXECUTE_NOT_CO
 | `PAYMENT_RECEIVER_ADDRESS` is `0x000…0000` | `PAYMENT_RECEIVER_MISMATCH` (configure a real payee) |
 | ERC-20: enough token in `Transfer` logs but none `to` = `PAYMENT_RECEIVER_ADDRESS` (e.g. paid facilitator only) | `PAYMENT_RECEIVER_MISMATCH` (message lists `Transfer` `to` addresses) |
 | `userAddress` or optional `payerAddress` not valid Algorand | `INVALID_ALGORAND_ADDRESS` |
-| Execute: mnemonic does not match `payerAddress` (or `userAddress` if payer omitted) | `SIGNER_MISMATCH` |
+| Execute: mnemonic does not match resolved payer (only when `SERVER_SIGNER_MNEMONIC` was unset for payer resolution) | `SIGNER_MISMATCH` |
 | Unknown `chain` | `UNSUPPORTED_CHAIN` |
 | `repayAmount` invalid for `exact` | `REPAY_AMOUNT_INVALID` |
 | `exact` amount above on-chain debt | `REPAY_EXCEEDS_DEBT` |
@@ -207,3 +218,37 @@ Expect `mode: "executed"`, `txIds`, `confirmedRound` on success. `EXECUTE_NOT_CO
 ## 9. Logs
 
 Watch stdout for structured JSON lines (`server_listen`, `dorkfi_repay_group_built`, errors). Mnemonics are not logged.
+
+## 10. Direct Algorand repay script (no HTTP / no Base gate)
+
+[`src/scripts/repaySmallUsdc.ts`](../src/scripts/repaySmallUsdc.ts) calls the same **`buildRepayOnBehalfGroupArccjs`** path as the gateway (nt200 `deposit` + `arc200_approve` + pool `repay_on_behalf`), signs with **`SERVER_SIGNER_MNEMONIC`**, and submits the group via **`sendAndConfirmGroup`**. Use it to debug arccjs / on-chain failures without Base payment or webhook idempotency.
+
+```bash
+export REPAY_BORROWER_ADDRESS=YOUR_BORROWER_ALGORAND_ADDR
+# Same .env as the gateway: SERVER_SIGNER_MNEMONIC, ALGOD_*, and usually DORKFI_LENDING_POOL_APP_ID for pool ≠ market.
+npm run script:repay-small-usdc
+```
+
+**Defaults:** `REPAY_AMOUNT` **`0.01`** (human USDC string), `REPAY_DECIMALS` **6**, `REPAY_MARKET_APP_ID` **3210682240**, `REPAY_UNDERLYING_ASA_ID` **31566704**, `REPAY_CHAIN` **`algorand-mainnet`**.
+
+| Env | Role |
+|-----|------|
+| `SERVER_SIGNER_MNEMONIC` | **Required.** Payer; must hold enough underlying USDC + ALGO, opted into the ASA. |
+| `REPAY_BORROWER_ADDRESS` | **Required.** `repay_on_behalf` beneficiary (borrower). |
+| `DORKFI_LENDING_POOL_APP_ID` | Optional; if unset, script uses `REPAY_MARKET_APP_ID` as pool id (same fallback as gateway). |
+| `REPAY_MARKET_APP_ID` | Optional; default **3210682240**. |
+| `REPAY_UNDERLYING_ASA_ID` | Optional; default **31566704** (mainnet USDC ASA). |
+| `REPAY_AMOUNT` | Optional; default **`0.01`** (decimal string, not micro-units). |
+| `REPAY_DECIMALS` | Optional; default **6**. |
+| `REPAY_CHAIN` | Optional; default **`algorand-mainnet`**. |
+
+**Not included:** Base payment validation, debt ceiling (`REPAY_EXCEEDS_DEBT`), or webhook API keys. If `REPAY_AMOUNT` exceeds on-chain debt, Algod may reject the group with a logic error. **Mainnet spends real funds** — use testnet envs or tiny amounts unless intentional.
+
+[`src/scripts/testRepayPayerBalance.ts`](../src/scripts/testRepayPayerBalance.ts) only calls **`assertPayerCanFundRepay`**: Algod **`accountInformation`** for the mnemonic account vs **`REPAY_UNDERLYING_ASA_ID`** and a required amount from **`REPAY_TEST_AMOUNT`** + **`REPAY_DECIMALS`** (no pool simulation, no arccjs build, no submit). Default amount is **`0.1`** with **6** decimals.
+
+```bash
+export SERVER_SIGNER_MNEMONIC="…"
+npm run script:test-repay-payer-balance
+```
+
+Override: `REPAY_TEST_AMOUNT=0.01 REPAY_UNDERLYING_ASA_ID=31566704 npm run script:test-repay-payer-balance`.

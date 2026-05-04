@@ -1,4 +1,5 @@
 import {
+  BlockNotFoundError,
   createPublicClient,
   decodeEventLog,
   decodeFunctionData,
@@ -7,6 +8,7 @@ import {
   isHex,
   size,
   type Hex,
+  type TransactionReceipt,
 } from "viem";
 import { base } from "viem/chains";
 import type { PaymentErrorCode } from "../types.js";
@@ -360,6 +362,53 @@ function formatRecipientMap(m: Map<string, bigint>): string {
     .join("; ");
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Some Base RPCs return a receipt before `eth_getBlockByHash` / `eth_getBlockByNumber` serves that
+ * block (transient null). Retry with backoff before failing payment age checks.
+ */
+async function getBlockForReceiptTimestamp(
+  receipt: Pick<TransactionReceipt, "blockHash" | "blockNumber">,
+  payCfgSuffix: string,
+  fetchBlock: (args: { blockHash: `0x${string}` } | { blockNumber: bigint }) => Promise<{ timestamp: bigint }>,
+): Promise<{ timestamp: bigint }> {
+  const maxAttempts = 5;
+  let lastErr = "";
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) {
+      await sleep(200 * 2 ** (attempt - 1));
+    }
+    try {
+      return await fetchBlock({ blockHash: receipt.blockHash });
+    } catch (e) {
+      if (!(e instanceof BlockNotFoundError)) {
+        throw e;
+      }
+      try {
+        return await fetchBlock({ blockNumber: receipt.blockNumber });
+      } catch (e2) {
+        lastErr = String(e2);
+        if (!(e2 instanceof BlockNotFoundError)) {
+          throw e2;
+        }
+      }
+    }
+  }
+  log.warn("base_block_fetch_failed", {
+    blockHash: receipt.blockHash,
+    blockNumber: receipt.blockNumber.toString(),
+    err: lastErr,
+    attempts: maxAttempts,
+  });
+  throw new PaymentValidationError(
+    "PAYMENT_TX_NOT_FOUND",
+    `Receipt exists but the Base RPC did not return that block after ${maxAttempts} attempts (try https://mainnet.base.org or wait and retry).${payCfgSuffix}`,
+  );
+}
+
 /** Non-secret payment gate env for error messages. */
 function paymentEnvSuffix(
   receiver: string,
@@ -425,6 +474,14 @@ export async function validateBasePaymentReceipt(basePaymentTxId: string): Promi
     transport: http(rpcUrl),
   });
 
+  const chainId = await client.getChainId();
+  if (chainId !== base.id) {
+    throw new PaymentValidationError(
+      "PAYMENT_BASE_RPC_CHAIN_MISMATCH",
+      `BASE_RPC_URL must be Base mainnet (chain id ${base.id}); this RPC reports ${chainId}. Fix the URL (e.g. https://mainnet.base.org).${paymentEnvSuffix(receiver, native, tokenRaw, tokenAddress, requiredAmount)}`,
+    );
+  }
+
   if (!isValidEvmTxHash(basePaymentTxId as `0x${string}`)) {
     throw new PaymentValidationError(
       "PAYMENT_TX_NOT_FOUND",
@@ -459,7 +516,11 @@ export async function validateBasePaymentReceipt(basePaymentTxId: string): Promi
     );
   }
 
-  const block = await client.getBlock({ blockNumber: receipt.blockNumber });
+  const payCfgSuffix = paymentEnvSuffix(receiver, native, tokenRaw, tokenAddress, requiredAmount);
+  const block = await getBlockForReceiptTimestamp(receipt, payCfgSuffix, async (args) => {
+    const b = await client.getBlock(args);
+    return { timestamp: b.timestamp };
+  });
   const blockTs = Number(block.timestamp);
   const now = Math.floor(Date.now() / 1000);
   if (Number.isFinite(maxAgeSeconds) && maxAgeSeconds > 0) {

@@ -62,7 +62,11 @@ Validates Base payment + builds an **unsigned** atomic group (base64-encoded uns
 ### `POST /webhook/repay/execute`
 
 Same validation + **signs** with `SERVER_SIGNER_MNEMONIC` and submits to Algorand.  
-**Constraint:** the mnemonic must resolve to **`payerAddress`**, or to **`userAddress`** if `payerAddress` is omitted (self-repay). Use **`payerAddress`** for repay-on-behalf when the server wallet pays the borrower’s loan.
+**Constraint:** when **`SERVER_SIGNER_MNEMONIC`** is set, the payer is always that account (body `payerAddress` ignored). When unset, the mnemonic must resolve to **`payerAddress`** if set, else **`userAddress`** (self-repay). Use **`payerAddress`** for repay-on-behalf only when the mnemonic env is unset.
+
+### `POST /webhook/keeperhub/repay` and `POST /webhook/keeperhub/repay/execute`
+
+Same request body and logic as the two routes above; responses use **`{ success, status, message, result }`** with **HTTP 200** for both success and structured failures so workflow engines (e.g. KeeperHub) always get an explicit completion payload. See [Repay flow — KeeperHub](docs/repay-flow.md#keeperhub-workflow-json-shape).
 
 ### Request body (both repay routes)
 
@@ -80,7 +84,7 @@ Same validation + **signs** with `SERVER_SIGNER_MNEMONIC` and submits to Algoran
 }
 ```
 
-`payerAddress` is optional; omit it to default the payer to `userAddress`. The market app call uses the **`repay_on_behalf`** method string (same style as `sync_market` in the scaffold).
+`payerAddress` is optional when **`SERVER_SIGNER_MNEMONIC`** is unset (omit to default payer to `userAddress`). When the mnemonic is set, payer is always the mnemonic account. The market app call uses the **`repay_on_behalf`** method string (same style as `sync_market` in the scaffold).
 
 - `marketAppId`: lending pool **`underlyingContractId`** (same as dorkfi-app `get_user` / `get_market`); must match the market you are repaying.
 - `repayMode`: `exact` uses `repayAmount` (decimal string, token decimals from chain). `max` repays `currentDebt + REPAY_MAX_BUFFER_BASE_UNITS`.
@@ -90,7 +94,8 @@ Same validation + **signs** with `SERVER_SIGNER_MNEMONIC` and submits to Algoran
 
 | Code | When |
 |------|------|
-| `PAYMENT_TX_NOT_FOUND` | Invalid hash or RPC has no receipt |
+| `PAYMENT_TX_NOT_FOUND` | Invalid hash or RPC has no receipt / could not load the receipt’s block |
+| `PAYMENT_BASE_RPC_CHAIN_MISMATCH` | `BASE_RPC_URL` is not Base mainnet (`eth_chainId` ≠ 8453) |
 | `PAYMENT_TX_FAILED` | Receipt status not success |
 | `PAYMENT_TOO_OLD` | Block timestamp older than `PAYMENT_MAX_AGE_SECONDS` (never when that env is `0`) |
 | `PAYMENT_RECEIVER_MISMATCH` | Native `to` wrong, or ERC-20 `Transfer` / EIP-3009 / Permit2 payee fields never credit receiver while enough token moved elsewhere (e.g. facilitator) |
@@ -125,7 +130,7 @@ curl -sS -X POST "http://localhost:3000/webhook/repay" \
 
 ### Execute repay
 
-Mnemonic must match **`payerAddress`** if set, else **`userAddress`**.
+Mnemonic must match **payer** (mnemonic account when env set; else `payerAddress` or `userAddress`).
 
 ```bash
 curl -sS -X POST "http://localhost:3000/webhook/repay/execute" \

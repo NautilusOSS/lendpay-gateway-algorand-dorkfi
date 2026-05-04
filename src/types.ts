@@ -13,7 +13,8 @@ export type PaymentErrorCode =
   | "PAYMENT_RECEIVER_MISMATCH"
   | "PAYMENT_AMOUNT_TOO_LOW"
   | "PAYMENT_TOKEN_MISMATCH"
-  | "PAYMENT_TX_ALREADY_USED";
+  | "PAYMENT_TX_ALREADY_USED"
+  | "PAYMENT_BASE_RPC_CHAIN_MISMATCH";
 
 export type ApiErrorCode =
   | PaymentErrorCode
@@ -27,6 +28,7 @@ export type ApiErrorCode =
   | "SIGNER_MISMATCH"
   | "CHAIN_RESOURCE_NOT_FOUND"
   | "ALGOD_ERROR"
+  | "PAYER_INSUFFICIENT_BALANCE"
   | "INTERNAL_ERROR";
 
 export type ApiErrorResponse = {

@@ -11,8 +11,9 @@ export const repayWebhookBodySchema = z.object({
   /** Borrower whose on-chain debt is repaid (pool `get_user` / repay_on_behalf accounts). */
   userAddress: z.string().min(1),
   /**
-   * Optional payer: account that sends ARC-200 / app txs and signs in execute mode.
-   * Omit to self-repay (`payerAddress` defaults to `userAddress`).
+   * Optional payer when `SERVER_SIGNER_MNEMONIC` is unset: account that sends ARC-200 / app txs
+   * (defaults to `userAddress`). When the mnemonic is set, the payer is always the mnemonic-derived
+   * address and this field is ignored (logged if it differs).
    */
   payerAddress: z.string().min(1).optional(),
   marketAppId: z.number().int().positive(),

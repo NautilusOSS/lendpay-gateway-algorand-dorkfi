@@ -1,6 +1,6 @@
 # Webhook API keys
 
-When `WEBHOOK_API_KEY` or `WEBHOOK_API_KEYS` is set, `POST /webhook/repay` and `POST /webhook/repay/execute` require a key via the `x-api-key` header or `Authorization: Bearer <key>`. See [.env.example](../.env.example).
+When `WEBHOOK_API_KEY` or `WEBHOOK_API_KEYS` is set, `POST /webhook/repay`, `POST /webhook/repay/execute`, `POST /webhook/keeperhub/repay`, and `POST /webhook/keeperhub/repay/execute` require a key via the `x-api-key` header or `Authorization: Bearer <key>`. See [.env.example](../.env.example).
 
 ## Generate keys on the command line
 
